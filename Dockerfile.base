@@ -1,9 +1,9 @@
-# UniMate shared base image -- CUDA + PyTorch + serving deps + weights.
+# UniMate shared base image -- CUDA + PyTorch + serving deps. No weights.
 #
-# Unlike the Kimodo / HY-Motion bases, the weights ARE baked in: the EMA-only
-# checkpoint is ~300 MB and flan-t5-base ~1 GB, small enough that a network
-# volume (and seeding it) buys nothing, and leaving it out keeps the endpoint
-# free to schedule in any datacenter.
+# Weights live outside the image, as for Kimodo / HY-Motion: a mounted
+# ./unimate-weights locally, the network volume (/runpod-volume/unimate) on
+# RunPod. docker-entrypoint.sh (added by the thin images) resolves them;
+# scripts/seed_weights.py fills a root once.
 #
 #   docker build -f Dockerfile.base -t sybiote/unimate-base:latest .
 #   docker push sybiote/unimate-base:latest
@@ -19,10 +19,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
-    HF_HOME=/opt/hf \
     HF_HUB_DISABLE_TELEMETRY=1 \
-    MPLBACKEND=Agg \
-    UNIMATE_EXP_DIR=/opt/unimate/model
+    MPLBACKEND=Agg
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip python3-dev git ca-certificates build-essential \
@@ -36,40 +34,3 @@ WORKDIR /app
 COPY requirements-serve.txt .
 RUN python -m pip install --upgrade pip "setuptools<81" wheel \
  && python -m pip install --no-build-isolation -r requirements-serve.txt
-
-# --- Weights ---------------------------------------------------------------
-# Pinned revisions: the model card notes checkpoints and dataset keep moving.
-ARG UNIMATE_REPO=Linzhan/UniMate
-ARG UNIMATE_REV=902b8465567159a974de2d10f129e29787b9e4e4
-ARG UNIMATE_MODEL=unimate_uniml3d_f60_v2
-ARG UNIMATE_STEP=100000
-ARG T5_REPO=google/flan-t5-base
-ARG T5_REV=7bcac572ce56db69c1ea7c8af255c5d7c9672fc2
-
-COPY unimate/ unimate/
-COPY data_process/ data_process/
-COPY scripts/slim_checkpoint.py scripts/slim_checkpoint.py
-
-# Filenames go positionally: `hf download --include` takes ONE pattern, and
-# extra values are read as filenames that silently switch the filter off.
-RUN hf download ${UNIMATE_REPO} \
-      "${UNIMATE_MODEL}/config.json" "${UNIMATE_MODEL}/dataset_stats.npy" \
-      "${UNIMATE_MODEL}/checkpoints/checkpoint_step_${UNIMATE_STEP}.pt" \
-      --revision ${UNIMATE_REV} --local-dir /tmp/ckpt \
- && mkdir -p ${UNIMATE_EXP_DIR}/checkpoints \
- && cp /tmp/ckpt/${UNIMATE_MODEL}/config.json /tmp/ckpt/${UNIMATE_MODEL}/dataset_stats.npy ${UNIMATE_EXP_DIR}/ \
- && python scripts/slim_checkpoint.py /tmp/ckpt/${UNIMATE_MODEL} \
-      /tmp/ckpt/${UNIMATE_MODEL}/checkpoints/checkpoint_step_${UNIMATE_STEP}.pt \
-      ${UNIMATE_EXP_DIR}/checkpoints/checkpoint_step_${UNIMATE_STEP}.pt \
- && rm -rf /tmp/ckpt ${HF_HOME}/xet
-
-# Into the HF cache, so from_pretrained("google/flan-t5-base") resolves offline.
-# PyTorch safetensors + tokenizer only; the repo also carries TF/Flax copies.
-RUN hf download ${T5_REPO} \
-      config.json model.safetensors spiece.model tokenizer.json \
-      tokenizer_config.json special_tokens_map.json \
-      --revision ${T5_REV} \
- && rm -rf ${HF_HOME}/xet
-
-ENV HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1

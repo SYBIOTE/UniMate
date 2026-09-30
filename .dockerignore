@@ -5,3 +5,4 @@ outputs
 assets
 **/__pycache__
 **/*.pyc
+unimate-weights
