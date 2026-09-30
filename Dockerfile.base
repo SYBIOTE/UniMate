@@ -50,9 +50,12 @@ COPY unimate/ unimate/
 COPY data_process/ data_process/
 COPY scripts/slim_checkpoint.py scripts/slim_checkpoint.py
 
-RUN hf download ${UNIMATE_REPO} --revision ${UNIMATE_REV} --local-dir /tmp/ckpt \
-      --include "${UNIMATE_MODEL}/config.json" "${UNIMATE_MODEL}/dataset_stats.npy" \
-                "${UNIMATE_MODEL}/checkpoints/checkpoint_step_${UNIMATE_STEP}.pt" \
+# Filenames go positionally: `hf download --include` takes ONE pattern, and
+# extra values are read as filenames that silently switch the filter off.
+RUN hf download ${UNIMATE_REPO} \
+      "${UNIMATE_MODEL}/config.json" "${UNIMATE_MODEL}/dataset_stats.npy" \
+      "${UNIMATE_MODEL}/checkpoints/checkpoint_step_${UNIMATE_STEP}.pt" \
+      --revision ${UNIMATE_REV} --local-dir /tmp/ckpt \
  && mkdir -p ${UNIMATE_EXP_DIR}/checkpoints \
  && cp /tmp/ckpt/${UNIMATE_MODEL}/config.json /tmp/ckpt/${UNIMATE_MODEL}/dataset_stats.npy ${UNIMATE_EXP_DIR}/ \
  && python scripts/slim_checkpoint.py /tmp/ckpt/${UNIMATE_MODEL} \
@@ -62,9 +65,10 @@ RUN hf download ${UNIMATE_REPO} --revision ${UNIMATE_REV} --local-dir /tmp/ckpt 
 
 # Into the HF cache, so from_pretrained("google/flan-t5-base") resolves offline.
 # PyTorch safetensors + tokenizer only; the repo also carries TF/Flax copies.
-RUN hf download ${T5_REPO} --revision ${T5_REV} \
-      --include "config.json" "model.safetensors" "spiece.model" "tokenizer.json" \
-                "tokenizer_config.json" "special_tokens_map.json" \
+RUN hf download ${T5_REPO} \
+      config.json model.safetensors spiece.model tokenizer.json \
+      tokenizer_config.json special_tokens_map.json \
+      --revision ${T5_REV} \
  && rm -rf ${HF_HOME}/xet
 
 ENV HF_HUB_OFFLINE=1 \
