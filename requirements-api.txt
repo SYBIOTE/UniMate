@@ -1,0 +1,4 @@
+# Synchronous HTTP API (api.py). Everything else is in the base image
+# (requirements-serve.txt).
+fastapi>=0.115
+uvicorn[standard]>=0.30

@@ -1,0 +1,19 @@
+# UniMate -- synchronous HTTP API (api.py) for direct testing.
+#
+#   docker build -f Dockerfile.base -t unimate-base:latest .
+#   docker build -f Dockerfile.http --build-arg BASE_IMAGE=unimate-base:latest -t unimate-http .
+#   docker run --gpus all -p 8000:8000 unimate-http
+
+ARG BASE_IMAGE=docker.io/sybiote/unimate-base:latest
+FROM ${BASE_IMAGE}
+
+COPY requirements-api.txt .
+RUN python -m pip install -r requirements-api.txt
+
+# The base bakes unimate/ as of its own build; copy the current code over it.
+COPY unimate/ unimate/
+COPY data_process/ data_process/
+COPY api.py api.py
+
+EXPOSE 8000
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
