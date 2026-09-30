@@ -31,6 +31,9 @@ from unimate.serving.rig import RigInput, prepare_rig, features_to_rig
 from unimate.utils.text_emb_cache import pool, sequences_from_hidden
 
 DOMAINS = ('truebones', 'mixamo', 'objaverse')
+# Frames the loop pass pins at each end: the clip's last LOOP_OVERLAP frames are
+# made to equal its first, so the cycle is T - LOOP_OVERLAP frames long.
+LOOP_OVERLAP = 6
 FPS = 30
 
 
@@ -43,6 +46,8 @@ class Generated:
     domain: str
     body_axis: bool = False
     plan: Optional[str] = None   # geometric body plan, for placeholder-named rigs
+    loop: bool = False           # last frame closes the cycle; root is in place
+    root_velocity: Optional[np.ndarray] = None  # (3,) per second, root parent space, loops only
 
 
 class UniMateEngine:
@@ -134,7 +139,8 @@ class UniMateEngine:
                  cfg_scale: Optional[float] = None, domain: str = 'truebones',
                  labels: Optional[Sequence[str]] = None,
                  face_pair: Optional[Sequence[str]] = None,
-                 body_axis: Optional[bool] = None, steps: Optional[int] = None) -> Generated:
+                 body_axis: Optional[bool] = None, steps: Optional[int] = None,
+                 loop: bool = False, foot_lock: bool = True) -> Generated:
         if domain not in DOMAINS:
             raise ValueError(f'domain must be one of {DOMAINS}')
         rig = RigInput.from_payload(skeleton)
@@ -183,11 +189,42 @@ class UniMateEngine:
                 gen_diffusion=self.gen_diffusion, device=self.device, cfg_scale=cfg,
             )
 
+        if loop:
+            samples = self._close_loop(samples, cond, shape, cfg)
+
         J = len(rig.names)
         feats = samples[0, :J].cpu().permute(2, 0, 1).numpy().astype(np.float64)  # (T, J, D)
         feats = feats * cond['std'][0][:J].cpu().numpy()[None] + cond['mean'][0][:J].cpu().numpy()[None]
-        local_quat, root_pos = features_to_rig(feats, ctx)
-        return Generated(local_quat, root_pos, labels, face_pair, domain, body_axis, plan)
+        local_quat, root_pos, root_velocity = features_to_rig(feats, ctx, foot_lock=foot_lock, in_place=loop)
+        return Generated(local_quat, root_pos, labels, face_pair, domain, body_axis, plan, loop, root_velocity)
+
+    def _close_loop(self, samples: torch.Tensor, cond: Dict, shape, cfg: float) -> torch.Tensor:
+        """Regenerate so the clip returns to its start, then trim to one cycle.
+
+        Uses the authors' replacement sampler (in-betweening): the first
+        LOOP_OVERLAP frames are held as generated and the last LOOP_OVERLAP
+        are pinned to those same frames, so the model writes its own
+        transition back to the start. Pinning several frames, not one, matches
+        velocities as well as poses across the seam. The features are
+        facing-relative, so the pinned end also returns to the start heading
+        while the root keeps its forward travel.
+
+        Returns frames [0, T - LOOP_OVERLAP]: the last repeats frame 0, so a
+        repeating player wraps without a seam.
+        """
+        T, k = self.T, LOOP_OVERLAP
+        x1_known = samples.clone()
+        x1_known[..., T - k:] = samples[..., :k]
+        keep_mask = torch.zeros((1, 1, 1, T), dtype=torch.bool, device=self.device)
+        keep_mask[..., :k] = True
+        keep_mask[..., T - k:] = True
+        looped = generate_samples(
+            model=self.model, cond=cond, motion_shape=shape,
+            diff_model=self.config.training.diff_model, diffusion=self.diffusion,
+            gen_diffusion=self.gen_diffusion, device=self.device, cfg_scale=cfg,
+            x1_known=x1_known, keep_mask=keep_mask,
+        )
+        return looped[..., :T - k + 1]
 
 
 def _latest_checkpoint(exp_dir: str) -> str:

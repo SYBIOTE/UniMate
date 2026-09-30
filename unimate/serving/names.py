@@ -12,7 +12,7 @@ on them less.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -80,6 +80,9 @@ class Anatomy:
     body_axis: bool
     plan: str                              # quadruped | biped | insect | finned | serpentine
     forward: np.ndarray
+    # Floor-reaching limbs as joint chains, limb root first, foot (the limb's
+    # lowest rest joint) last: what foot-contact cleanup pins.
+    leg_chains: List[List[int]] = field(default_factory=list)
 
 
 def _lateral_axis(rel: np.ndarray) -> np.ndarray:
@@ -94,7 +97,8 @@ def _lateral_axis(rel: np.ndarray) -> np.ndarray:
     return lateral
 
 
-def analyze_rig(parents: np.ndarray, world_pos: np.ndarray) -> Anatomy:
+def analyze_rig(parents: np.ndarray, world_pos: np.ndarray,
+                forward_hint: Optional[np.ndarray] = None) -> Anatomy:
     """Infer anatomy from a Y-up rest pose alone (no names).
 
     1. Left-right axis from mirror symmetry; midline vs sided joints.
@@ -106,6 +110,11 @@ def analyze_rig(parents: np.ndarray, world_pos: np.ndarray) -> Anatomy:
     4. Body plan from floor-reaching limb pairs; labels in the training
        vocabulary; facing pair = the hind leg roots (what training used),
        or the head-tail axis for legless bodies.
+
+    ``forward_hint`` (world, Y-up) settles step 3 when the caller knows which
+    way the creature faces -- e.g. from a vision pass over a render of the
+    mesh. Only its sign against the symmetry axis is used, so a rough
+    direction is enough.
     """
     parents = np.asarray(parents)
     P = np.asarray(world_pos, dtype=np.float64)
@@ -199,6 +208,8 @@ def analyze_rig(parents: np.ndarray, world_pos: np.ndarray) -> Anatomy:
     att = sum((rel[parents[r]] - rel[hub]) @ f0 for r in limb_root)
     if abs(att) > 0.05 * size:                            # front limbs attach away from the pelvis
         votes += np.sign(att)
+    if forward_hint is not None and abs(np.asarray(forward_hint, float) @ f0) > 1e-6:
+        votes = float(np.sign(np.asarray(forward_hint, float) @ f0))
     forward = f0 if votes > 0 or (votes == 0 and f0[2] >= 0) else -f0
     right = np.cross(forward, _UP)
     ahead = rel @ forward
@@ -311,7 +322,18 @@ def analyze_rig(parents: np.ndarray, world_pos: np.ndarray) -> Anatomy:
         face, body_axis = (int(head_tip), int(tail_tip)), True
     else:
         face = None
-    return Anatomy(labels, face, body_axis, plan, forward)
+    leg_chains = []
+    for r in limb_root:
+        if not reach_floor[r]:
+            continue
+        foot = min(sub[r], key=lambda k: (round(P[k, 1], 6), -_depth(parents, k)))
+        chain, k = [], foot
+        while k != parents[r]:
+            chain.append(int(k))
+            k = parents[k]
+        if len(chain) >= 2:
+            leg_chains.append(chain[::-1])
+    return Anatomy(labels, face, body_axis, plan, forward, leg_chains)
 
 
 def _depth(parents: np.ndarray, j: int) -> int:

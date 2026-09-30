@@ -10,20 +10,26 @@ in how a ``ServiceError`` reaches the caller.
                             "rootParentMatrix": [16 floats, column-major]?},
                "seed": int?, "cfg_scale": float?,
                "steps": int? (Euler steps, default 50; 0 = adaptive dopri5),
+               "loop": true | false | "auto"? (default auto: cyclic prompts loop),
+               "foot_lock": bool? (default true: pin feet during contacts),
                "domain": "truebones" | "mixamo" | "objaverse"?,
                "labels": [...]?, "face_pair": [right, left]?, "body_axis": bool?}
     response: {"motion": {"fps", "frames", "bone_names",
-                          "local_quat": [T][J][x,y,z,w], "root_pos": [T][x,y,z]},
+                          "local_quat": [T][J][x,y,z,w], "root_pos": [T][x,y,z],
+                          "loop", "root_velocity": [x,y,z] | null},
                "meta": {"labels", "face_pair", "body_axis", "body_plan", "domain",
                         "steps", "seed", "ms"}}
 """
 
+import re
 import time
 
 from unimate.serving.engine import DOMAINS, UniMateEngine
 from unimate.serving.rig import RigError
 
 DEFAULT_STEPS = 50
+# Prompts for cyclic motion loop by default ("loop": "auto").
+CYCLIC = re.compile(r'\b(walk|run|trot|gallop|canter|jog|sprint|crawl|slither|swim|fly|flies|flying|flap|hop|march|prowl|pace|idle|breath)', re.IGNORECASE)
 
 
 class ServiceError(Exception):
@@ -44,6 +50,11 @@ def run_motion(engine: UniMateEngine, request: dict) -> dict:
         raise ServiceError("bad_input", f"'domain' must be one of {DOMAINS}")
     steps = int(request.get("steps", DEFAULT_STEPS))
     seed = request.get("seed")
+    loop = request.get("loop", "auto")
+    if loop not in (True, False, "auto"):
+        raise ServiceError("bad_input", "'loop' must be true, false or \"auto\"")
+    if loop == "auto":
+        loop = bool(CYCLIC.search(text))
 
     started = time.time()
     try:
@@ -56,6 +67,8 @@ def run_motion(engine: UniMateEngine, request: dict) -> dict:
             face_pair=request.get("face_pair"),
             body_axis=request.get("body_axis"),
             steps=steps or None,
+            loop=loop,
+            foot_lock=bool(request.get("foot_lock", True)),
         )
     except RigError as e:
         raise ServiceError("bad_rig", str(e)) from e
@@ -69,6 +82,10 @@ def run_motion(engine: UniMateEngine, request: dict) -> dict:
             "bone_names": list(skeleton["names"]),
             "local_quat": out.local_quat.round(5).tolist(),
             "root_pos": out.root_pos.round(5).tolist(),
+            # Loops: the last frame repeats the first and the root is in place;
+            # root_velocity (per second, root parent space) carries the travel.
+            "loop": out.loop,
+            "root_velocity": out.root_velocity.round(5).tolist() if out.root_velocity is not None else None,
         },
         "meta": {
             "labels": list(out.labels),

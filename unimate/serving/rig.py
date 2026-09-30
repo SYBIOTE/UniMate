@@ -46,6 +46,7 @@ from data_process.utils.skeleton import (
     get_skeleton_diameter,
 )
 from Animation import offsets_from_positions
+from unimate.serving import cleanup
 from unimate.utils.motion_utils import (
     hml_rotations_to_bvh_quaternions,
     recover_unimate_joint_pos_from_rot,
@@ -93,6 +94,7 @@ class RigContext:
     rest_world_rot: Quaternions  # (J,) caller rest global rotations, BFS order
     parent_rot: Quaternions      # (1,) rotation part of root_parent
     root_parent: np.ndarray      # (4, 4)
+    leg_chains: List[List[int]] = None  # floor-reaching limbs, BFS indices, for foot lock
 
 
 def _wxyz(q_xyzw: np.ndarray) -> np.ndarray:
@@ -190,7 +192,13 @@ def prepare_rig(rig: RigInput, clean_names: Sequence[str],
         scale_factor=scale, ground_height=None,
     )
 
+    # Legs on the canonical rest pose (facing +Z, floor at 0), in BFS indices:
+    # what foot-contact cleanup pins.
+    from unimate.serving.names import analyze_rig
+    leg_chains = analyze_rig(np.asarray(parents_bfs), positions_global(canon)[0]).leg_chains
+
     return RigContext(
+        leg_chains=leg_chains,
         cond=cond, bfs_order=list(bfs_order), parents_bfs=np.asarray(parents_bfs),
         facing=facing, xz=np.asarray(xz, dtype=np.float64), ground=float(ground),
         scale=float(scale), rest_world_rot=rotations_global(tpos_anim)[0],
@@ -198,8 +206,15 @@ def prepare_rig(rig: RigInput, clean_names: Sequence[str],
     )
 
 
-def features_to_rig(feats: np.ndarray, ctx: RigContext):
-    """Denormalized model features (T, J, 12) in BFS order -> caller's bones."""
+def features_to_rig(feats: np.ndarray, ctx: RigContext, foot_lock: bool = True,
+                    in_place: bool = False, fps: int = 30):
+    """Denormalized model features (T, J, 12) in BFS order -> caller's bones.
+
+    Returns (local_quat, root_pos, root_velocity). ``foot_lock`` pins feet
+    during contacts (cleanup.foot_lock). ``in_place`` is for loops whose last
+    frame closes the cycle: the root's net travel is removed and returned as
+    ``root_velocity`` (root-parent space, units per second); None otherwise.
+    """
     T, J, _ = feats.shape
     parents = ctx.parents_bfs
 
@@ -215,6 +230,25 @@ def features_to_rig(feats: np.ndarray, ctx: RigContext):
     lowest = recover_unimate_joint_pos_from_rot(feats, parents, canon_offsets)[..., 1].min()
     root_pos_canon = root_pos_canon.copy()
     root_pos_canon[:, 1] -= lowest
+
+    if foot_lock and ctx.leg_chains:
+        local_c = rebased.qs
+        if in_place:
+            # Keep the seam outside every pinned contact, or the IK solves the
+            # two ends of the cycle differently.
+            local_c, root_pos_canon, _ = cleanup.rotate_loop_to_free_frame(
+                local_c, root_pos_canon, parents, canon_offsets, ctx.leg_chains)
+        local_c = cleanup.foot_lock(local_c, root_pos_canon, parents, canon_offsets, ctx.leg_chains)
+        if in_place:
+            local_c = cleanup.close_seam(local_c)
+        rebased = Quaternions(local_c)
+
+    root_velocity = None
+    if in_place:
+        root_pos_canon, per_frame = cleanup.to_in_place(root_pos_canon)
+        v_world = ((-ctx.facing) * (per_frame[None] / ctx.scale))[0]
+        s = np.linalg.norm(ctx.root_parent[:3, :3], axis=0).mean()
+        root_velocity = (np.linalg.inv(ctx.root_parent[:3, :3] / s) @ v_world) / s * fps
 
     # World-space deltas from rest, canonical frame. Leaves carry no rotation
     # channel (HML stores each joint's rotation in its child's slot), so their
@@ -244,4 +278,4 @@ def features_to_rig(feats: np.ndarray, ctx: RigContext):
     # BFS order -> caller order.
     out_q = np.empty((T, J, 4))
     out_q[:, ctx.bfs_order] = _xyzw(local.normalized().qs)
-    return out_q, root_pos
+    return out_q, root_pos, root_velocity
