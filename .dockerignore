@@ -1,0 +1,7 @@
+.git
+.venv
+dataset
+outputs
+assets
+**/__pycache__
+**/*.pyc
