@@ -45,8 +45,10 @@ from data_process.utils.skeleton import (
     get_root_facing_quat,
     get_skeleton_diameter,
 )
+from Animation import offsets_from_positions
 from unimate.utils.motion_utils import (
     hml_rotations_to_bvh_quaternions,
+    recover_unimate_joint_pos_from_rot,
     recover_unimate_root_quat_and_pos,
 )
 
@@ -203,6 +205,16 @@ def features_to_rig(feats: np.ndarray, ctx: RigContext):
 
     rebased = hml_rotations_to_bvh_quaternions(feats[:, :, 3:9], parents)
     _, root_pos_canon = recover_unimate_root_quat_and_pos(feats[:, 0])
+
+    # Re-ground: the model places each clip against its own lowest point, and
+    # small errors there sink a walking creature into the floor or float it
+    # (measured on the stock rigs: -0.3 to +0.15 of body height). Shift the
+    # clip so its lowest joint over all frames touches the rest pose's floor,
+    # which is y=0 in the canonical frame. A takeoff still starts on the ground.
+    canon_offsets = offsets_from_positions(np.asarray(ctx.cond['tpos_first_frame']), parents)
+    lowest = recover_unimate_joint_pos_from_rot(feats, parents, canon_offsets)[..., 1].min()
+    root_pos_canon = root_pos_canon.copy()
+    root_pos_canon[:, 1] -= lowest
 
     # World-space deltas from rest, canonical frame. Leaves carry no rotation
     # channel (HML stores each joint's rotation in its child's slot), so their
