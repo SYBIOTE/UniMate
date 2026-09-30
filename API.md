@@ -14,13 +14,17 @@ python scripts/slim_checkpoint.py <hf exp dir> <hf ckpt.pt> <model dir>/checkpoi
 UNIMATE_EXP_DIR=<model dir> uvicorn api:app --port 8000
 ```
 
-Docker (weights baked into the base):
+Docker, like the local Kimodo container (weights mounted from `./unimate-weights`, port 8010):
 
 ```bash
-docker build -f Dockerfile.base -t unimate-base:latest .
-docker build -f Dockerfile.http --build-arg BASE_IMAGE=unimate-base:latest -t unimate-http .
-docker run --gpus all -p 8000:8000 unimate-http
+make build-base      # deps only; rebuild when requirements change
+make build           # the API image
+make weights         # once: pinned checkpoint (EMA-only) + flan-t5-base, ~1.3 GB
+make dev             # docker compose up; curl localhost:8010/health
 ```
+
+Point the app at it with `DEV_UNIMATE_API_URL=http://localhost:8010` in
+`nirvana-animate-saas/.env.local`.
 
 ## Endpoints
 
