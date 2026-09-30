@@ -1,0 +1,30 @@
+# UniMate HTTP API — local WSL / Linux dev (same shape as kimodo-backend's).
+#
+# Prerequisites:
+#   - NVIDIA Container Toolkit
+#   - unimate-base built locally (make build-base); weights are baked in, so
+#     no volumes are needed
+#
+# Usage:
+#   make dev
+#   curl http://localhost:8010/health   (host 8010 -> container 8000; Kimodo holds 8000)
+
+services:
+  unimate-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.http
+      args:
+        BASE_IMAGE: unimate-base:latest
+    image: unimate-http:latest
+    container_name: unimate-api
+    ports:
+      - "${HOST_PORT:-8010}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
