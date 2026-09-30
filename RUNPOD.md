@@ -12,7 +12,7 @@ released `sample.py` would read from a stage-4 `cond.npy`.
 |------|------|
 | `Dockerfile.base` | CUDA 12.4 + Python 3.10 + `requirements-serve.txt` + weights (EMA-only v2 checkpoint, flan-t5-base), pinned HF revisions |
 | `Dockerfile` | Queue worker on top of the base: `runpod`, current `unimate/`, `data_process/`, `handler.py` |
-| `handler.py` | Job in/out, error codes |
+| `handler.py` | Queue transport: job in/out, error codes. The logic is `unimate/serving/service.py`, shared with the HTTP API on `dev` |
 | `unimate/serving/rig.py` | Caller rig ⇄ canonical skeleton (stage-4 canonicalization and its inverse) |
 | `unimate/serving/names.py` | Joint labels the model conditions on; facing pair |
 | `unimate/serving/engine.py` | Loads once, builds the one-sample batch, samples |
