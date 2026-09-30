@@ -34,6 +34,12 @@ DOMAINS = ('truebones', 'mixamo', 'objaverse')
 # Frames the loop pass pins at each end: the clip's last LOOP_OVERLAP frames are
 # made to equal its first, so the cycle is T - LOOP_OVERLAP frames long.
 LOOP_OVERLAP = 6
+# Root feature channels holding horizontal velocity in the facing frame
+# ([XZ_vel_x, Y_vel, XZ_vel_z] at 9:12, see unimate.utils.motion_utils).
+ROOT_VEL_X, ROOT_VEL_Z = 9, 11
+# Below this steady speed (canonical units per frame, diameter-2 skeleton) a
+# loop is treated as stationary (an idle, breathing) and its root is left free.
+MIN_LOOP_SPEED = 0.004
 FPS = 30
 
 
@@ -199,25 +205,50 @@ class UniMateEngine:
         return Generated(local_quat, root_pos, labels, face_pair, domain, body_axis, plan, loop, root_velocity)
 
     def _close_loop(self, samples: torch.Tensor, cond: Dict, shape, cfg: float) -> torch.Tensor:
-        """Regenerate so the clip returns to its start, then trim to one cycle.
+        """Regenerate as a steady cycle that returns to its start; trim to one cycle.
 
-        Uses the authors' replacement sampler (in-betweening): the first
-        LOOP_OVERLAP frames are held as generated and the last LOOP_OVERLAP
-        are pinned to those same frames, so the model writes its own
-        transition back to the start. Pinning several frames, not one, matches
-        velocities as well as poses across the seam. The features are
-        facing-relative, so the pinned end also returns to the start heading
-        while the root keeps its forward travel.
+        Uses the authors' replacement sampler, which pins any mix of frames,
+        joints and feature channels:
 
-        Returns frames [0, T - LOOP_OVERLAP]: the last repeats frame 0, so a
-        repeating player wraps without a seam.
+        - The loop is anchored in the steady part of the first pass, not at its
+          first frames: a 2 s clip tends to start up and settle down (a trot
+          measured 4.4 u/s, then 0.3 in its last third), and closing the loop
+          on that made the model re-enact the stop mid-cycle and lurch back to
+          speed at the seam.
+        - The anchor's LOOP_OVERLAP frames are pinned at both ends, so the model
+          writes its own transition back to them, matching poses and
+          velocities across the seam.
+        - For moving gaits, the root's horizontal velocity (facing frame) is
+          pinned to the gait's steady speed on every frame, so the whole cycle
+          keeps pace and runs in place without surging. Limbs and body stay free.
+
+        Returns frames [0, T - LOOP_OVERLAP]: the last repeats frame 0.
         """
         T, k = self.T, LOOP_OVERLAP
+        mean, std = cond['mean'][0, 0], cond['std'][0, 0]              # root joint, (D,)
+        root = samples[0, 0] * std[:, None] + mean[:, None]             # (D, T) denormalized
+        vx, vz = root[ROOT_VEL_X], root[ROOT_VEL_Z]
+        speed = torch.hypot(vx, vz)
+        peak = torch.quantile(speed, 0.9)
+        moving = bool(peak > MIN_LOOP_SPEED)
+        if moving:
+            steady = speed >= 0.5 * peak
+            idx = torch.nonzero(steady).flatten()
+            anchor = int(min(max(int(idx.float().median()) - k // 2, 0), T - k))
+        else:
+            anchor = T // 2 - k // 2
+
         x1_known = samples.clone()
-        x1_known[..., T - k:] = samples[..., :k]
-        keep_mask = torch.zeros((1, 1, 1, T), dtype=torch.bool, device=self.device)
+        window = samples[..., anchor:anchor + k].clone()
+        x1_known[..., :k] = window
+        x1_known[..., T - k:] = window
+        keep_mask = torch.zeros(shape, dtype=torch.bool, device=self.device)
         keep_mask[..., :k] = True
         keep_mask[..., T - k:] = True
+        if moving:
+            for channel, value in ((ROOT_VEL_X, vx[steady].median()), (ROOT_VEL_Z, vz[steady].median())):
+                x1_known[0, 0, channel, :] = (value - mean[channel]) / std[channel]
+                keep_mask[0, 0, channel, :] = True
         looped = generate_samples(
             model=self.model, cond=cond, motion_shape=shape,
             diff_model=self.config.training.diff_model, diffusion=self.diffusion,
