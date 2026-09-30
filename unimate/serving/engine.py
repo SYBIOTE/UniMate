@@ -41,6 +41,8 @@ class Generated:
     labels: Sequence[str]        # cleaned names the model was conditioned on
     face_pair: Optional[Sequence[str]]
     domain: str
+    body_axis: bool = False
+    plan: Optional[str] = None   # geometric body plan, for placeholder-named rigs
 
 
 class UniMateEngine:
@@ -132,15 +134,28 @@ class UniMateEngine:
                  cfg_scale: Optional[float] = None, domain: str = 'truebones',
                  labels: Optional[Sequence[str]] = None,
                  face_pair: Optional[Sequence[str]] = None,
-                 body_axis: bool = False, steps: Optional[int] = None) -> Generated:
+                 body_axis: Optional[bool] = None, steps: Optional[int] = None) -> Generated:
         if domain not in DOMAINS:
             raise ValueError(f'domain must be one of {DOMAINS}')
         rig = RigInput.from_payload(skeleton)
-        labels = list(labels) if labels else self._auto_labels(rig)
+        plan = None
+        if rig_names.looks_generic(rig.names):
+            # Placeholder names (SkinTokens non-humanoids): anatomy, facing
+            # and body axis all come from the rest pose. Caller values win.
+            anatomy = rig_names.analyze_rig(rig.parents, _rest_world_positions(rig))
+            plan = anatomy.plan
+            labels = list(labels) if labels else anatomy.labels
+            if face_pair is None and anatomy.face_pair is not None:
+                face_pair = [rig.names[i] for i in anatomy.face_pair]
+                if body_axis is None:
+                    body_axis = anatomy.body_axis
+        else:
+            labels = list(labels) if labels else rig_names.clean_names(rig.names)
+            if face_pair is None:
+                face_pair = rig_names.pick_face_pair(rig.names, labels, rig.parents, _depths(rig.parents))
         if len(labels) != len(rig.names):
             raise ValueError('labels must have one entry per bone')
-        if face_pair is None:
-            face_pair = rig_names.pick_face_pair(rig.names, labels, rig.parents, _depths(rig.parents))
+        body_axis = bool(body_axis)
 
         ctx = prepare_rig(rig, labels, face_pair=face_pair, body_axis=body_axis,
                           max_joints=self.max_joints, max_depth=self.max_depth,
@@ -172,12 +187,7 @@ class UniMateEngine:
         feats = samples[0, :J].cpu().permute(2, 0, 1).numpy().astype(np.float64)  # (T, J, D)
         feats = feats * cond['std'][0][:J].cpu().numpy()[None] + cond['mean'][0][:J].cpu().numpy()[None]
         local_quat, root_pos = features_to_rig(feats, ctx)
-        return Generated(local_quat, root_pos, labels, face_pair, domain)
-
-    def _auto_labels(self, rig: RigInput):
-        if not rig_names.looks_generic(rig.names):
-            return rig_names.clean_names(rig.names)
-        return rig_names.geometric_labels(rig.parents, _rest_world_positions(rig))
+        return Generated(local_quat, root_pos, labels, face_pair, domain, body_axis, plan)
 
 
 def _latest_checkpoint(exp_dir: str) -> str:

@@ -14,7 +14,8 @@ in how a ``ServiceError`` reaches the caller.
                "labels": [...]?, "face_pair": [right, left]?, "body_axis": bool?}
     response: {"motion": {"fps", "frames", "bone_names",
                           "local_quat": [T][J][x,y,z,w], "root_pos": [T][x,y,z]},
-               "meta": {"labels", "face_pair", "domain", "steps", "seed", "ms"}}
+               "meta": {"labels", "face_pair", "body_axis", "body_plan", "domain",
+                        "steps", "seed", "ms"}}
 """
 
 import time
@@ -53,7 +54,7 @@ def run_motion(engine: UniMateEngine, request: dict) -> dict:
             domain=domain,
             labels=request.get("labels"),
             face_pair=request.get("face_pair"),
-            body_axis=bool(request.get("body_axis", False)),
+            body_axis=request.get("body_axis"),
             steps=steps or None,
         )
     except RigError as e:
@@ -72,6 +73,8 @@ def run_motion(engine: UniMateEngine, request: dict) -> dict:
         "meta": {
             "labels": list(out.labels),
             "face_pair": list(out.face_pair) if out.face_pair else None,
+            "body_axis": out.body_axis,
+            "body_plan": out.plan,
             "domain": out.domain,
             "steps": steps,
             "seed": seed,
