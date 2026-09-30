@@ -1,0 +1,31 @@
+# UniMate serving image (queue worker base): runtime deps only.
+#
+# Derived from requirements.txt with the data-pipeline-only packages removed
+# (bpy, CLIP, spaCy + its model, the OpenAI / Gemini captioning clients) --
+# none of them are imported on the inference path. Versions stay pinned to
+# requirements.txt, the combination the serving code was tested against.
+#
+#   pip install "setuptools<81" && pip install --no-build-isolation -r requirements-serve.txt
+--extra-index-url https://download.pytorch.org/whl/cu124
+setuptools<81                   # keeps pkg_resources available (Motion build)
+numpy==2.2.6
+torch==2.5.1+cu124
+torchvision==0.20.1+cu124
+torch-geometric==2.7.0          # GCN graph embedding (use_graph_emb)
+torchdiffeq==0.2.5              # ODE/SDE integrators for flow matching
+einops==0.8.2
+accelerate==1.14.0              # multi-GPU + mixed-precision training; transformers 5.x needs >=1.1
+tensorboard==2.20.0             # training logs (SummaryWriter)
+transformers==5.16.1            # T5/BERT text encoders; local Qwen3-VL captioner needs >=4.57, Qwen3.5 (qwen3_5 arch) needs 5.x
+sentencepiece==0.2.1            # T5 tokenizer backend
+num2words==0.5.14               # number → word expansion in text normalization
+huggingface_hub==1.29.0
+Motion @ git+https://github.com/inbar-2344/Motion.git
+matplotlib==3.10.8
+imageio==2.37.3
+imageio-ffmpeg==0.6.0           # mp4 encoding backend for imageio
+pillow==12.2.0
+tyro==1.0.12                    # config + CLI overrides
+rich==14.3.3
+loguru==0.7.3
+tqdm==4.67.3
