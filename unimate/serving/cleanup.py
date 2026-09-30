@@ -4,8 +4,8 @@ T-pose-rebased rotations, so every joint's rest rotation is identity).
 - ``foot_lock``: detect foot contacts and pin each contact to one spot on the
   floor with CCD IK over the leg, removing foot sliding and the sideways splay
   that comes with it.
-- ``to_in_place``: remove a loop's forward travel so it cycles on the spot,
-  returning the travel as a velocity for the caller to apply.
+- ``rotate_loop_to_free_frame`` / ``close_seam``: keep a loop's seam intact
+  under foot lock.
 
 Quaternions here are plain (..., 4) w, x, y, z arrays: the Holden Quaternions
 class broadcasts too strictly for per-frame, per-joint batch updates.
@@ -195,16 +195,3 @@ def close_seam(local: np.ndarray, frames: int = BLEND_FRAMES + 2) -> np.ndarray:
         w = 1.0 - (i - 1) / frames
         local[t] = qslerp(local[t], local[0], np.full(local.shape[1], w))
     return local
-
-
-def to_in_place(root_pos: np.ndarray) -> (np.ndarray, np.ndarray):
-    """Remove a loop's net XZ travel linearly; returns (in-place root, travel per frame).
-
-    ``root_pos`` spans one cycle with its last frame closing the loop, so the
-    travel is last minus first, spread evenly over the cycle's frames.
-    """
-    n = len(root_pos) - 1
-    travel = root_pos[-1] - root_pos[0]
-    travel[1] = 0.0
-    per_frame = travel / max(n, 1)
-    return root_pos - np.arange(len(root_pos))[:, None] * per_frame[None], per_frame

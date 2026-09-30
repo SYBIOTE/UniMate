@@ -54,7 +54,6 @@ class Generated:
     plan: Optional[str] = None   # geometric body plan, for placeholder-named rigs
     loop: bool = False           # last frame closes the cycle
     root_velocity: Optional[np.ndarray] = None  # (3,) per second, root parent space, loops only
-    in_place: bool = False       # loop with its travel removed (else root motion)
 
 
 class UniMateEngine:
@@ -147,7 +146,7 @@ class UniMateEngine:
                  labels: Optional[Sequence[str]] = None,
                  face_pair: Optional[Sequence[str]] = None,
                  body_axis: Optional[bool] = None, steps: Optional[int] = None,
-                 loop: bool = False, foot_lock: bool = True, in_place: bool = False) -> Generated:
+                 loop: bool = False, foot_lock: bool = True) -> Generated:
         if domain not in DOMAINS:
             raise ValueError(f'domain must be one of {DOMAINS}')
         rig = RigInput.from_payload(skeleton)
@@ -202,10 +201,8 @@ class UniMateEngine:
         J = len(rig.names)
         feats = samples[0, :J].cpu().permute(2, 0, 1).numpy().astype(np.float64)  # (T, J, D)
         feats = feats * cond['std'][0][:J].cpu().numpy()[None] + cond['mean'][0][:J].cpu().numpy()[None]
-        local_quat, root_pos, root_velocity = features_to_rig(
-            feats, ctx, foot_lock=foot_lock, loop=loop, in_place=loop and in_place)
-        return Generated(local_quat, root_pos, labels, face_pair, domain, body_axis, plan, loop,
-                         root_velocity, loop and in_place)
+        local_quat, root_pos, root_velocity = features_to_rig(feats, ctx, foot_lock=foot_lock, loop=loop)
+        return Generated(local_quat, root_pos, labels, face_pair, domain, body_axis, plan, loop, root_velocity)
 
     def _close_loop(self, samples: torch.Tensor, cond: Dict, shape, cfg: float) -> torch.Tensor:
         """Regenerate as a steady cycle that returns to its start; trim to one cycle.
