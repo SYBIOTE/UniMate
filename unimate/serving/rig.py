@@ -207,13 +207,15 @@ def prepare_rig(rig: RigInput, clean_names: Sequence[str],
 
 
 def features_to_rig(feats: np.ndarray, ctx: RigContext, foot_lock: bool = True,
-                    in_place: bool = False, fps: int = 30):
+                    loop: bool = False, in_place: bool = False, fps: int = 30):
     """Denormalized model features (T, J, 12) in BFS order -> caller's bones.
 
     Returns (local_quat, root_pos, root_velocity). ``foot_lock`` pins feet
-    during contacts (cleanup.foot_lock). ``in_place`` is for loops whose last
-    frame closes the cycle: the root's net travel is removed and returned as
-    ``root_velocity`` (root-parent space, units per second); None otherwise.
+    during contacts (cleanup.foot_lock). ``loop`` marks a clip whose last frame
+    closes the cycle; its average travel comes back as ``root_velocity``
+    (root-parent space, units per second), None for one-shots. The root keeps
+    that travel (root motion: the last frame is one cycle ahead of the first)
+    unless ``in_place``, which removes it so the cycle runs on the spot.
     """
     T, J, _ = feats.shape
     parents = ctx.parents_bfs
@@ -233,19 +235,21 @@ def features_to_rig(feats: np.ndarray, ctx: RigContext, foot_lock: bool = True,
 
     if foot_lock and ctx.leg_chains:
         local_c = rebased.qs
-        if in_place:
+        if loop:
             # Keep the seam outside every pinned contact, or the IK solves the
             # two ends of the cycle differently.
             local_c, root_pos_canon, _ = cleanup.rotate_loop_to_free_frame(
                 local_c, root_pos_canon, parents, canon_offsets, ctx.leg_chains)
         local_c = cleanup.foot_lock(local_c, root_pos_canon, parents, canon_offsets, ctx.leg_chains)
-        if in_place:
+        if loop:
             local_c = cleanup.close_seam(local_c)
         rebased = Quaternions(local_c)
 
     root_velocity = None
-    if in_place:
-        root_pos_canon, per_frame = cleanup.to_in_place(root_pos_canon)
+    if loop:
+        in_place_pos, per_frame = cleanup.to_in_place(root_pos_canon)
+        if in_place:
+            root_pos_canon = in_place_pos
         v_world = ((-ctx.facing) * (per_frame[None] / ctx.scale))[0]
         s = np.linalg.norm(ctx.root_parent[:3, :3], axis=0).mean()
         root_velocity = (np.linalg.inv(ctx.root_parent[:3, :3] / s) @ v_world) / s * fps
